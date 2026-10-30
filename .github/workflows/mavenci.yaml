@@ -1,32 +1,76 @@
-name: ci pipeline to build java code 
+name: Multi-Environment Deployment Pipeline
+
 on:
-   push:
-     branches: master
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Select environment
+        required: true
+        type: choice
+        options:
+          - TEST
+          - PRE-PROD
+          - PROD
+
 jobs:
   build:
-     runs-on: ubuntu-latest
-     steps:
-       - name: checkout code
-         uses: actions/checkout@v5
-       - name: set-up jdk
-         uses: actions/setup-java@v5
-         with:
-            distribution: 'temurin'
-            java-version: '17'
-       - name: validate with maven 
-         run:  mvn validate
-       - name: compile with maven 
-         run:  mvn compile 
-       - name: test with maven 
-         run:  mvn test
-       - name: package with maven 
-         run:  mvn package
-       - name: verify war file 
-         run:  ls -lh target/
+    runs-on: self-hosted
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11'
+          cache: maven
 
+      - name: Build WAR
+        run: mvn clean package -DskipTests
 
+      - name: Upload WAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: Train-Ticket-WAR
+          path: target/*.war
 
-          
-         
-       
+  deploy:
+    needs: build
+    if: github.event_name == 'push' || inputs.environment != ''
+    runs-on: self-hosted
+
+    environment:
+      name: ${{ github.event_name == 'push' && 'DEV' || inputs.environment }}
+
+    steps:
+      - name: Download WAR
+        uses: actions/download-artifact@v4
+        with:
+          name: Train-Ticket-WAR
+
+      - name: Deploy to EC2
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+        run: |
+          set -e
+
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+
+          printf '%s\n' "$EC2_SSH_KEY" > ~/.ssh/trainkey
+          chmod 600 ~/.ssh/trainkey
+
+          ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
+
+          WAR_FILE=$(find . -name '*.war' -print -quit)
+          test -n "$WAR_FILE"
+
+          scp -i ~/.ssh/trainkey "$WAR_FILE" ubuntu@"$EC2_HOST":/tmp/train-ticket-reservation.war
+
+          ssh -i ~/.ssh/trainkey ubuntu@"$EC2_HOST" \
+            "sudo systemctl stop tomcat || true; sudo rm -rf /opt/tomcat/webapps/train-ticket-reservation; sudo mv /tmp/train-ticket-reservation.war /opt/tomcat/webapps/train-ticket-reservation.war; sudo chown tomcat:tomcat /opt/tomcat/webapps/train-ticket-reservation.war; sudo systemctl start tomcat"
