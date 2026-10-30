@@ -1,33 +1,56 @@
-
-name: Train Ticket Reservation CI/CD
+name: Multi-Environment Deployment Pipeline
 
 on:
   push:
-    branches:
-      - master
+    branches: [master]
   workflow_dispatch:
+    inputs:
+      environment:
+        description: Select deployment environment
+        required: true
+        type: choice
+        options:
+          - TEST
+          - PRE-PROD
+          - PROD
 
 jobs:
   build:
-    name: Build Java Application
-    runs-on: ubuntu-latest
-
+    runs-on: self-hosted
     steps:
-      - name: Checkout source code
-        uses: actions/checkout@v4
-
-      - name: Set up Java 11
-        uses: actions/setup-java@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '11'
           cache: maven
-
-      - name: Build WAR file
+      - name: Build WAR
         run: mvn clean package -DskipTests
-
-      - name: Upload WAR artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: Train-Ticket-WAR
           path: target/*.war
+
+  deploy-dev:
+    if: github.event_name == 'push'
+    needs: build
+    runs-on: self-hosted
+    environment: DEV
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: Train-Ticket-WAR
+      - name: Deploy to DEV
+        run: echo "DEV deployment will be configured next"
+
+  deploy-selected:
+    if: github.event_name == 'workflow_dispatch'
+    needs: build
+    runs-on: self-hosted
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: Train-Ticket-WAR
+      - name: Deploy selected environment
+        run: echo "Deployment to ${{ inputs.environment }} will be configured next"
