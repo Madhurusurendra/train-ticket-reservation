@@ -1,16 +1,15 @@
-name: Multi-Environment Deployment Pipeline
+
+name: Multi-Environment CI-CD
 
 on:
-  push:
-    branches:
-      - master
   workflow_dispatch:
     inputs:
       environment:
-        description: Select environment
+        description: Select deployment environment
         required: true
         type: choice
         options:
+          - DEV
           - TEST
           - PRE-PROD
           - PROD
@@ -23,7 +22,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '11'
@@ -38,13 +37,12 @@ jobs:
           name: Train-Ticket-WAR
           path: target/*.war
 
-  deploy:
+  deploy-selected:
     needs: build
-    if: github.event_name == 'push' || inputs.environment != ''
     runs-on: self-hosted
 
     environment:
-      name: ${{ github.event_name == 'push' && 'DEV' || inputs.environment }}
+      name: ${{ inputs.environment }}
 
     steps:
       - name: Download WAR
@@ -52,7 +50,7 @@ jobs:
         with:
           name: Train-Ticket-WAR
 
-      - name: Deploy to EC2
+      - name: Deploy WAR to EC2
         env:
           EC2_HOST: ${{ secrets.EC2_HOST }}
           EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
@@ -65,12 +63,12 @@ jobs:
           printf '%s\n' "$EC2_SSH_KEY" > ~/.ssh/trainkey
           chmod 600 ~/.ssh/trainkey
 
-          ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
-
           WAR_FILE=$(find . -name '*.war' -print -quit)
           test -n "$WAR_FILE"
+
+          ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
 
           scp -i ~/.ssh/trainkey "$WAR_FILE" ubuntu@"$EC2_HOST":/tmp/train-ticket-reservation.war
 
           ssh -i ~/.ssh/trainkey ubuntu@"$EC2_HOST" \
-            "sudo systemctl stop tomcat || true; sudo rm -rf /opt/tomcat/webapps/train-ticket-reservation; sudo mv /tmp/train-ticket-reservation.war /opt/tomcat/webapps/train-ticket-reservation.war; sudo chown tomcat:tomcat /opt/tomcat/webapps/train-ticket-reservation.war; sudo systemctl start tomcat"
+            "sudo systemctl stop tomcat; sudo rm -rf /opt/tomcat/webapps/train-ticket-reservation; sudo mv /tmp/train-ticket-reservation.war /opt/tomcat/webapps/train-ticket-reservation.war; sudo chown tomcat:tomcat /opt/tomcat/webapps/train-ticket-reservation.war; sudo systemctl start tomcat; sudo systemctl is-active tomcat"
