@@ -1,74 +1,68 @@
-
-name: Multi-Environment CI-CD
+name: CI/CD Pipeline with Nexus
 
 on:
-  workflow_dispatch:
-    inputs:
-      environment:
-        description: Select deployment environment
-        required: true
-        type: choice
-        options:
-          - DEV
-          - TEST
-          - PRE-PROD
-          - PROD
+  push:
+    branches:
+      - master
 
 jobs:
+
   build:
-    runs-on: self-hosted
+
+    runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout
+
+      # 1. Checkout Source Code
+      - name: Checkout Source
         uses: actions/checkout@v4
 
-      - name: Setup Java
-        uses: actions/setup-java@v5
+      # 2. Setup Java 17
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '11'
+          java-version: '17'
           cache: maven
 
-      - name: Build WAR
-        run: mvn clean package -DskipTests
+      # 3. Validate
+      - name: Validate
+        run: mvn validate
 
-      - name: Upload WAR
-        uses: actions/upload-artifact@v4
-        with:
-          name: Train-Ticket-WAR
-          path: target/*.war
+      # 4. Compile
+      - name: Compile
+        run: mvn compile
 
-  deploy-selected:
-    needs: build
-    runs-on: self-hosted
+      # 5. Test
+      - name: Test
+        run: mvn test
 
-    environment:
-      name: ${{ inputs.environment }}
+      # 6. Package
+      - name: Package
+        run: mvn package -DskipTests
 
-    steps:
-      - name: Download WAR
-        uses: actions/download-artifact@v4
-        with:
-          name: Train-Ticket-WAR
-
-      - name: Deploy WAR to EC2
+      # 7. Configure Maven Credentials for Nexus
+      - name: Configure Maven Settings
         env:
-          EC2_HOST: ${{ secrets.EC2_HOST }}
-          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          NEXUS_USERNAME: ${{ secrets.NEXUS_USERNAME }}
+          NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
         run: |
-          set -e
+          mkdir -p ~/.m2
 
-          mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
+          cat > ~/.m2/settings.xml <<EOF
+          <settings>
+            <servers>
+              <server>
+                <id>nexus</id>
+                <username>${NEXUS_USERNAME}</username>
+                <password>${NEXUS_PASSWORD}</password>
+              </server>
+            </servers>
+          </settings>
+          EOF
 
-          printf '%s\n' "$EC2_SSH_KEY" > ~/.ssh/trainkey
-          chmod 600 ~/.ssh/trainkey
-
-          WAR_FILE=$(find . -name '*.war' -print -quit)
-          test -n "$WAR_FILE"
-
-          ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
-
-          scp -i ~/.ssh/trainkey "$WAR_FILE" ubuntu@"$EC2_HOST":/tmp/train-ticket-reservation.war
-
-          ssh -i ~/.ssh/trainkey ubuntu@"$EC2_HOST" \
-            "sudo systemctl stop tomcat; sudo rm -rf /opt/tomcat/webapps/train-ticket-reservation; sudo mv /tmp/train-ticket-reservation.war /opt/tomcat/webapps/train-ticket-reservation.war; sudo chown tomcat:tomcat /opt/tomcat/webapps/train-ticket-reservation.war; sudo systemctl start tomcat; sudo systemctl is-active tomcat"
+      # 8. Deploy Artifact to Nexus
+      - name: Deploy to Nexus
+        run: |
+          mvn deploy -DskipTests \
+            -DaltDeploymentRepository=nexus::http://184.72.155.195:8081/repository/maven-snapshots/
